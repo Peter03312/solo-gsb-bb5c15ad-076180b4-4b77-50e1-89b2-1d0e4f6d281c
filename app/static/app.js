@@ -60,6 +60,7 @@ async function openReview(id) {
   resetEdits();
   hideBanner();
   render();
+  loadVersions().catch((err) => showBanner("⚠ 版本列表加载失败：" + escapeHtml(err.message)));
 }
 
 function resetEdits() {
@@ -170,84 +171,83 @@ function chainHtml(chain) {
   return `<ol class="chain">` + chain.map((s) => `<li>${escapeHtml(s.text)}</li>`).join("") + `</ol>`;
 }
 
-function renderResults() {
-  const comp = state.current.computation;
-  const summary = $("#result-summary");
-  const conflictsEl = $("#conflicts");
-  const draftsEl = $("#drafts");
-  const skippedEl = $("#skipped");
-  const windowsEl = $("#windows");
-  conflictsEl.innerHTML = draftsEl.innerHTML = skippedEl.innerHTML = windowsEl.innerHTML = "";
+function fmtTime(s) { return s ? escapeHtml(String(s).replace("T", " ")) : "—（暂存）"; }
 
-  if (!comp) {
-    summary.innerHTML = `<div class="summary warn">尚无推算结果，请保存后查看。</div>`;
-    return;
-  }
-  const res = comp.result;
+function buildResultHtml(res, evByKey) {
+  // 生成推算结果各分区 HTML。evByKey: {窗口中使用的事件 id/key -> 事件输入}
   const nConf = res.conflicts.length;
   const nDraft = res.drafts.length;
+  let summary;
   if (nConf > 0) {
-    summary.innerHTML = `<div class="summary err">推算发现 ${nConf} 处约束冲突 —— 原始输入已保留，该版本不得定稿。</div>`;
+    summary = `<div class="summary err">推算发现 ${nConf} 处约束冲突 —— 原始输入已保留，该版本不得定稿。</div>`;
   } else if (nDraft > 0) {
-    summary.innerHTML = `<div class="summary warn">推算通过，但有 ${nDraft} 个事件处于暂存状态，补齐时间范围前不得定稿。</div>`;
+    summary = `<div class="summary warn">推算通过，但有 ${nDraft} 个事件处于暂存状态，补齐时间范围前不得定稿。</div>`;
   } else {
-    summary.innerHTML = `<div class="summary ok">推算通过：所有事件均存在可行时间窗。</div>`;
+    summary = `<div class="summary ok">推算通过：所有事件均存在可行时间窗。</div>`;
   }
 
+  let conflicts = "";
   if (nConf > 0) {
-    conflictsEl.innerHTML = `<div class="section-title">冲突明细（输入已保留）</div>`;
-    for (const c of res.conflicts) {
-      const div = document.createElement("div");
-      div.className = "card conflict";
-      let html = `<div class="msg">⚠ ${escapeHtml(c.message)}</div>`;
+    conflicts = `<div class="section-title">冲突明细（输入已保留）</div>` + res.conflicts.map((c) => {
+      let html = `<div class="card conflict"><div class="msg">⚠ ${escapeHtml(c.message)}</div>`;
       if (c.earliest_chain) {
         html += `<details open><summary>最早可行开始的依据链</summary>${chainHtml(c.earliest_chain)}</details>`;
         html += `<details open><summary>最晚可行开始的依据链</summary>${chainHtml(c.latest_chain)}</details>`;
       }
-      div.innerHTML = html;
-      conflictsEl.appendChild(div);
-    }
+      return html + `</div>`;
+    }).join("");
   }
 
+  let drafts = "";
   if (nDraft > 0) {
-    draftsEl.innerHTML = `<div class="section-title">暂存事件（不参与推算）</div>`;
-    for (const d of res.drafts) {
-      const div = document.createElement("div");
-      div.className = "card draft";
-      div.innerHTML = `<h3>「${escapeHtml(d.name)}」</h3><div class="reason">${escapeHtml(d.reason)}</div>`;
-      draftsEl.appendChild(div);
-    }
+    drafts = `<div class="section-title">暂存事件（不参与推算）</div>` + res.drafts.map((d) =>
+      `<div class="card draft"><h3>「${escapeHtml(d.name)}」</h3>` +
+      `<div class="reason">${escapeHtml(d.reason)}</div></div>`).join("");
   }
 
+  let skipped = "";
   if (res.skipped_relations.length > 0) {
-    skippedEl.innerHTML = `<div class="section-title">暂不参与推算的关系</div>`;
-    for (const s of res.skipped_relations) {
-      const div = document.createElement("div");
-      div.className = "card draft";
-      div.innerHTML = `<div class="reason">${escapeHtml(s.reason)}</div>`;
-      skippedEl.appendChild(div);
-    }
+    skipped = `<div class="section-title">暂不参与推算的关系</div>` + res.skipped_relations.map((s) =>
+      `<div class="card draft"><div class="reason">${escapeHtml(s.reason)}</div></div>`).join("");
   }
 
+  let windows = "";
   const winIds = Object.keys(res.windows);
   if (winIds.length > 0) {
-    windowsEl.innerHTML = `<div class="section-title">各事件可行时间窗（推算结果，与原始输入分开保存）</div>`;
-    const byId = {};
-    for (const e of state.current.events) byId[String(e.id)] = e;
-    for (const id of winIds) {
-      const w = res.windows[id];
-      const ev = byId[id];
-      if (!ev) continue;
-      const div = document.createElement("div");
-      div.className = "card";
-      div.innerHTML =
-        `<h3>「${escapeHtml(ev.name)}」 <span class="window">${w.earliest_start.replace("T", " ")} ~ ${w.latest_start.replace("T", " ")}</span></h3>` +
-        `<div class="hint">可行结束窗口：${w.earliest_end.replace("T", " ")} ~ ${w.latest_end.replace("T", " ")}（持续 ${ev.duration_minutes} 分钟）</div>` +
-        `<details><summary>最早可行开始的依据链</summary>${chainHtml(w.earliest_chain)}</details>` +
-        `<details><summary>最晚可行开始的依据链</summary>${chainHtml(w.latest_chain)}</details>`;
-      windowsEl.appendChild(div);
-    }
+    windows = `<div class="section-title">各事件可行时间窗（推算结果，与原始输入分开保存）</div>` +
+      winIds.map((id) => {
+        const w = res.windows[id];
+        const ev = evByKey[id];
+        const name = ev ? ev.name : id;
+        const dur = ev ? ev.duration_minutes : "";
+        return `<div class="card">` +
+          `<h3>「${escapeHtml(name)}」 <span class="window">${w.earliest_start.replace("T", " ")} ~ ${w.latest_start.replace("T", " ")}</span></h3>` +
+          `<div class="hint">可行结束窗口：${w.earliest_end.replace("T", " ")} ~ ${w.latest_end.replace("T", " ")}` +
+          (dur === null || dur === undefined || dur === "" ? "" : `（持续 ${dur} 分钟）`) + `</div>` +
+          `<details><summary>最早可行开始的依据链</summary>${chainHtml(w.earliest_chain)}</details>` +
+          `<details><summary>最晚可行开始的依据链</summary>${chainHtml(w.latest_chain)}</details>` +
+          `</div>`;
+      }).join("");
   }
+
+  return { summary, conflicts, drafts, skipped, windows };
+}
+
+function renderResults() {
+  const comp = state.current.computation;
+  const slots = [
+    ["#result-summary", "summary"], ["#conflicts", "conflicts"],
+    ["#drafts", "drafts"], ["#skipped", "skipped"], ["#windows", "windows"],
+  ];
+  if (!comp) {
+    for (const [sel] of slots) $(sel).innerHTML = "";
+    $("#result-summary").innerHTML = `<div class="summary warn">尚无推算结果，请保存后查看。</div>`;
+    return;
+  }
+  const byKey = {};
+  for (const e of state.current.events) byKey[String(e.id)] = e;
+  const parts = buildResultHtml(comp.result, byKey);
+  for (const [sel, key] of slots) $(sel).innerHTML = parts[key];
 }
 
 function escapeHtml(s) {
@@ -292,6 +292,7 @@ async function save() {
     resetEdits();
     hideBanner();
     render();
+    loadVersions();
     loadReviews(bundle.review.id);
   } catch (err) {
     handleSaveError(err);
@@ -323,6 +324,136 @@ async function finalize() {
     resetEdits();
     hideBanner();
     render();
+    loadVersions();
+    loadReviews(bundle.review.id);
+  } catch (err) {
+    handleSaveError(err);
+  }
+}
+
+/* ------------------------------------------------------------ 版本回看/恢复 */
+
+async function loadVersions() {
+  if (!state.current) return;
+  const data = await api("GET", "/api/reviews/" + state.current.review.id + "/versions");
+  const tbody = $("#versions-table tbody");
+  tbody.innerHTML = "";
+  for (const v of data.versions) {
+    const tr = document.createElement("tr");
+    const cur = v.version === data.current_version;
+    let html = `<td>v${v.version}${cur ? ' <span class="kind-tag">当前</span>' : ""}</td>`;
+    html += `<td>${kindTag(v)}</td>`;
+    html += `<td>${statusText(v)}</td>`;
+    html += `<td class="hint">${(v.computed_at || "").replace("T", " ")}</td>`;
+    html += `<td class="version-actions"></td>`;
+    tr.innerHTML = html;
+    const td = tr.querySelector(".version-actions");
+    if (v.reviewable) {
+      const btn = document.createElement("button");
+      btn.textContent = "回看";
+      btn.addEventListener("click", () => openVersion(v.version));
+      td.appendChild(btn);
+    } else {
+      const span = document.createElement("span");
+      span.className = "legacy-note";
+      span.textContent = "不可回看、不可恢复（" + (v.reason || "缺少输入快照") + "）";
+      td.appendChild(span);
+    }
+    tbody.appendChild(tr);
+  }
+}
+
+function kindTag(v) {
+  if (v.kind === "finalize") return `<span class="kind-tag finalize">已定稿</span>`;
+  if (v.kind === "restore") return `<span class="kind-tag restore">恢复产生</span>`;
+  if (v.kind === "save") return `<span class="kind-tag">保存</span>`;
+  return `<span class="kind-tag">历史记录</span>`;
+}
+
+function statusText(v) {
+  if (v.state === "finalized") return `<span class="badge ok">已定稿</span>`;
+  if (v.status === "conflict") return `<span class="badge err">冲突·不得定稿</span>`;
+  if (v.has_drafts) return `<span class="badge warn">草稿·有暂存</span>`;
+  return `<span class="badge">草稿</span>`;
+}
+
+async function openVersion(version) {
+  const rid = state.current.review.id;
+  let detail;
+  try {
+    detail = await api("GET", `/api/reviews/${rid}/versions/${version}`);
+  } catch (err) {
+    showBanner("⚠ " + escapeHtml(err.message || "无法回看该版本"));
+    return;
+  }
+  $("#vm-title").textContent = `v${detail.version} ${detail.title}`;
+  $("#vm-badges").innerHTML = kindTag(detail) + " " + statusText(detail);
+  let meta = `推算状态：${detail.status === "ok" ? "通过" : "冲突"}`;
+  if (detail.kind === "restore" && detail.source_version) {
+    meta += `　|　由 v${detail.source_version} 恢复而来`;
+  }
+  meta += `　|　推算时间：${(detail.computed_at || "").replace("T", " ")}`;
+  $("#vm-meta").textContent = meta;
+  $("#vm-body").innerHTML = renderVersionDetail(detail);
+  const btn = $("#btn-vm-restore");
+  btn.disabled = false;
+  btn.onclick = () => restoreVersion(detail);
+  $("#version-modal").classList.remove("hidden");
+}
+
+function closeVersionModal() {
+  $("#version-modal").classList.add("hidden");
+}
+
+function renderVersionDetail(detail) {
+  const events = detail.input.events || [];
+  const byKey = {};
+  for (const e of events) byKey[e.key] = e;
+
+  const rows = events.map((e) =>
+    `<tr><td>${escapeHtml(e.name)}</td>` +
+    `<td>${fmtTime(e.earliest_start)}</td>` +
+    `<td>${fmtTime(e.latest_start)}</td>` +
+    `<td>${e.duration_minutes === null || e.duration_minutes === undefined ? "—" : e.duration_minutes}</td>` +
+    `<td>${escapeHtml(e.note || "")}</td></tr>`).join("");
+
+  const rels = (detail.input.relations || []).map((r) => {
+    const a = byKey[r.predecessor_key], b = byKey[r.successor_key];
+    const an = a ? a.name : "?";
+    const bn = b ? b.name : "?";
+    return `<div>「${escapeHtml(an)}」先于「${escapeHtml(bn)}」</div>`;
+  }).join("") || `<div class="hint">无</div>`;
+
+  // 快照事件以 id_<旧行id> 为 key，推算结果窗口仍以旧行 id 为键
+  const winIndex = {};
+  for (const e of events) winIndex[String(e.key).replace(/^id_/, "")] = e;
+  const parts = buildResultHtml(detail.result, winIndex);
+
+  return `<div class="section-title">当时输入（不可变快照）</div>` +
+    `<table><thead><tr><th>事件名称</th><th>最早开始</th><th>最晚开始</th>` +
+    `<th>持续(分钟)</th><th>备注</th></tr></thead><tbody>${rows}</tbody></table>` +
+    `<div class="section-title">“先于”关系</div><div class="vm-relations">${rels}</div>` +
+    `<div class="section-title">当时推算依据与结果</div>` +
+    parts.summary + parts.conflicts + parts.drafts + parts.skipped + parts.windows;
+}
+
+async function restoreVersion(detail) {
+  if (!state.current) return;
+  if (!confirm(`确定把 v${detail.version} 的输入恢复为当前复盘的新草稿版本吗？\n` +
+               `将重新推算，且不会覆盖任何旧版本（需基于当前 v${state.current.review.version}）。`)) {
+    return;
+  }
+  try {
+    const bundle = await api(
+      "POST",
+      `/api/reviews/${state.current.review.id}/versions/${detail.version}/restore`,
+      { base_version: state.current.review.version });
+    closeVersionModal();
+    state.current = bundle;
+    resetEdits();
+    hideBanner();
+    render();
+    await loadVersions();
     loadReviews(bundle.review.id);
   } catch (err) {
     handleSaveError(err);
@@ -351,6 +482,14 @@ $("#btn-delete").addEventListener("click", async () => {
 
 $("#btn-refresh").addEventListener("click", () => {
   if (state.current) openReview(state.current.review.id);
+});
+
+$("#btn-reload-versions").addEventListener("click", () => {
+  if (state.current) loadVersions();
+});
+$("#btn-vm-close").addEventListener("click", closeVersionModal);
+$("#version-modal").addEventListener("click", (e) => {
+  if (e.target.id === "version-modal") closeVersionModal();
 });
 
 $("#review-select").addEventListener("change", (e) => openReview(e.target.value));

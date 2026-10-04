@@ -12,6 +12,13 @@
   并展示从输入到结论的完整依据链。
 - **输入与结果分离保存**：原始输入存于 `events` / `relations` 表，每次保存的推算结果
   单独写入 `computations` 表（按复盘版本留存），互不覆盖。
+- **版本回看与恢复**：每次保存/定稿成功时，除推算结果外另写一条**不可变输入快照**
+  （标题、事件、“先于”关系）到 `snapshots` 表，与当次推算一一对应。网页和 HTTP API
+  可列出各版本、回看当时输入与推算依据；把指定版本恢复时会**另存为当前复盘的新草稿
+  版本**并重新推算，不覆盖任何旧版本。恢复须携带当前 `base_version`，版本过期沿用
+  409 冲突语义。冲突或暂存输入允许恢复，但仍不得定稿。
+- **旧库历史版本**：升级前只有推算结果、缺少完整输入快照的历史版本，会在版本列表中
+  明确标记为「不可回看、不可恢复」，不会用当前输入冒充；老接口行为保持不变。
 - **冲突处理**：约束冲突（窗口不可满足、关系成环、输入范围自相矛盾）时保留全部输入，
   指出冲突事件及双方依据链，该版本**不得定稿**。
 - **暂存事件**：缺少时间范围（或持续分钟数）的事件可暂存，其关联的“先于”关系
@@ -55,6 +62,7 @@ Compose 示例（`docker-compose.yml`）中已包含命名卷 `timeline-data` �
 python3 app/server.py          # 默认监听 8000，数据库写入 ./data/timeline.db
 PORT=9000 DB_PATH=/tmp/t.db python3 app/server.py
 python3 tests/test_compute.py  # 推算引擎单元测试
+python3 tests/test_versions.py # 版本快照/回看/恢复、旧库兼容单元测试
 ```
 
 ## HTTP API 简介
@@ -66,7 +74,42 @@ python3 tests/test_compute.py  # 推算引擎单元测试
 | GET | `/api/reviews/{id}` | 复盘快照：元信息 + 原始输入 + 最近一次推算结果 |
 | PUT | `/api/reviews/{id}` | 整体保存并重新推算 `{base_version, title, events, relations}`；版本过期返回 409 |
 | POST | `/api/reviews/{id}/finalize` | 定稿 `{base_version}`；有冲突或暂存事件返回 400 |
+| GET | `/api/reviews/{id}/versions` | 版本列表（含回看/恢复标记；旧库无快照版本 `reviewable=false`） |
+| GET | `/api/reviews/{id}/versions/{v}` | 版本回看：当时标题/事件/关系输入 + 推算依据与状态；旧库无快照返回 422 |
+| POST | `/api/reviews/{id}/versions/{v}/restore` | 恢复为新草稿版本 `{base_version}`；过期返回 409，旧库无快照返回 422 |
 | DELETE | `/api/reviews/{id}` | 删除复盘 |
+
+### 版本回看与恢复（HTTP 示例）
+
+```bash
+# 1) 列出可回看的版本
+curl -s http://localhost:8000/api/reviews/1/versions
+# {"current_version": 4, "versions": [
+#   {"version": 4, "kind": "finalize", "state": "finalized",
+#    "reviewable": true, "restorable": true, "status": "ok", ...},
+#   {"version": 3, "kind": "save", "state": "draft", "reviewable": true, ...},
+#   {"version": 2, "kind": null, "reviewable": false, "restorable": false,
+#    "reason": "历史版本缺少完整输入快照，不可回看、不可恢复", ...} ]}
+
+# 2) 回看某版本：返回不可变输入（title/events/relations）与当时推算结果
+curl -s http://localhost:8000/api/reviews/1/versions/3
+# {"version": 3, "state": "draft", "kind": "save", "title": "...",
+#  "input": {"events": [...], "relations": [...]},
+#  "result": {"status": "ok", "windows": {...}, "conflicts": [], "drafts": []}}
+
+# 3) 把 v3 恢复为当前复盘的新草稿版本（必须带当前 base_version；旧版本不被覆盖）
+curl -s -X POST http://localhost:8000/api/reviews/1/versions/3/restore \
+  -H 'Content-Type: application/json' -d '{"base_version": 4}'
+# 成功返回与 GET /api/reviews/1 相同的新快照（version=5, status="draft"）。
+# base_version 过期 → 409 {"error": "...", "current_version": 5}
+# 恢复冲突/暂存输入：允许成功，但该新草稿仍不可定稿（finalize 返回 400）。
+# 恢复旧库无快照版本 → 422 {"error": "历史版本缺少完整输入快照，不可回看、不可恢复"}
+```
+
+页面下方「历史版本」面板提供同样的操作：每行可**回看**（弹窗展示当时输入与推算依据
+链，可直接**恢复为新草稿版本**）；旧库无快照版本只显示不可回看、不可恢复的原因。
+定稿产生的新版本会标注「已定稿」并沿用同一输入；由恢复产生的版本标注「恢复产生」并
+记录来源版本。
 
 ## 目录结构
 

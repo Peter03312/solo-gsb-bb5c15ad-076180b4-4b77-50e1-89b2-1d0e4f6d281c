@@ -9,6 +9,9 @@
   GET    /api/reviews/{id}        复盘快照（输入 + 最近一次推算结果）
   PUT    /api/reviews/{id}        整体保存并重新推算  {base_version, title, events, relations}
   POST   /api/reviews/{id}/finalize  定稿  {base_version}
+  GET    /api/reviews/{id}/versions       可回看版本列表（含不可回看的旧库历史版本标记）
+  GET    /api/reviews/{id}/versions/{v}   某版本回看：当时输入 + 推算依据 + 状态
+  POST   /api/reviews/{id}/versions/{v}/restore  恢复为新草稿版本 {base_version}
   DELETE /api/reviews/{id}        删除复盘
 
 并发控制：所有修改请求必须携带 base_version，与服务器当前版本一致才接受，
@@ -185,11 +188,38 @@ class Handler(BaseHTTPRequestHandler):
                 db.finalize_review(DB_PATH, rid, body["base_version"])
                 return self._send_json(200, db.get_bundle(DB_PATH, rid))
 
+            m = re.fullmatch(r"/api/reviews/(\d+)/versions", path)
+            if m and method == "GET":
+                rid = int(m.group(1))
+                return self._send_json(200, {
+                    "current_version": db.current_version(DB_PATH, rid),
+                    "versions": db.list_versions(DB_PATH, rid),
+                })
+
+            m = re.fullmatch(r"/api/reviews/(\d+)/versions/(\d+)", path)
+            if m and method == "GET":
+                rid, ver = int(m.group(1)), int(m.group(2))
+                return self._send_json(200, db.get_version(DB_PATH, rid, ver))
+
+            m = re.fullmatch(r"/api/reviews/(\d+)/versions/(\d+)/restore", path)
+            if m and method == "POST":
+                rid, ver = int(m.group(1)), int(m.group(2))
+                body = self._read_json()
+                if not isinstance(body.get("base_version"), int):
+                    raise ApiError(400, "缺少 base_version（用于并发版本校验）")
+                db.restore_review(DB_PATH, rid, body["base_version"], ver)
+                return self._send_json(200, db.get_bundle(DB_PATH, rid))
+
             raise ApiError(404, "not found")
         except ApiError as e:
             self._send_json(e.status, e.payload)
         except db.NotFound:
             self._send_json(404, {"error": "复盘不存在"})
+        except db.VersionNotFound:
+            self._send_json(404, {"error": "该版本不存在"})
+        except db.LegacyVersion:
+            self._send_json(422, {"error": db.LEGACY_REASON,
+                                  "reviewable": False, "restorable": False})
         except db.VersionConflict as e:
             self._send_json(409, {
                 "error": "该复盘已被其他成员保存了更新的版本，你的修改未保存，请刷新后重试",

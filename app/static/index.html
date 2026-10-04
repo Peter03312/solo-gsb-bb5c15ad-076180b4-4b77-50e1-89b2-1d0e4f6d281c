@@ -60,7 +60,38 @@
     <div id="skipped"></div>
     <div id="windows"></div>
   </section>
+
+  <section class="panel" id="history">
+    <div class="history-head">
+      <h2>历史版本（可回看 / 可恢复）</h2>
+      <button id="btn-reload-versions" title="重新加载版本列表">刷新版本</button>
+    </div>
+    <p class="hint">每次保存或定稿都会留存不可变的标题、事件与“先于”关系输入快照。恢复会把旧版本输入另存为当前复盘的新草稿版本并重新推算，不会覆盖任何旧版本。</p>
+    <table id="versions-table">
+      <thead>
+        <tr>
+          <th>版本</th><th>类型</th><th>推算状态</th><th>时间</th><th>操作</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
 </main>
+
+<div id="version-modal" class="modal-mask hidden">
+  <div class="modal">
+    <div class="modal-head">
+      <span id="vm-title" class="vm-title"></span>
+      <span id="vm-badges"></span>
+      <button id="btn-vm-close" title="关闭">✕</button>
+    </div>
+    <div id="vm-meta" class="hint"></div>
+    <div id="vm-body" class="modal-body"></div>
+    <div class="modal-foot">
+      <button id="btn-vm-restore" class="primary">恢复为新草稿版本</button>
+    </div>
+  </div>
+</div>
 
 <div id="empty" class="empty">请选择或新建一个复盘开始协作。</div>
 
