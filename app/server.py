@@ -9,10 +9,13 @@
   GET    /api/reviews/{id}        复盘快照（输入 + 最近一次推算结果）
   PUT    /api/reviews/{id}        整体保存并重新推算  {base_version, title, events, relations}
   POST   /api/reviews/{id}/finalize  定稿  {base_version}
+  GET    /api/reviews/{id}/versions      历史版本列表（含是否可回看/恢复标记）
+  GET    /api/reviews/{id}/versions/{v}  回看版本 v：当时输入快照 + 推算结果与依据
+  POST   /api/reviews/{id}/restore       恢复版本为新草稿  {base_version, review_version}
   DELETE /api/reviews/{id}        删除复盘
 
-并发控制：所有修改请求必须携带 base_version，与服务器当前版本一致才接受，
-否则返回 409，客户端提示刷新。
+并发控制：所有修改请求（含恢复）必须携带 base_version，与服务器当前版本
+一致才接受，否则返回 409，客户端提示刷新。
 """
 
 import json
@@ -185,17 +188,44 @@ class Handler(BaseHTTPRequestHandler):
                 db.finalize_review(DB_PATH, rid, body["base_version"])
                 return self._send_json(200, db.get_bundle(DB_PATH, rid))
 
+            m = re.fullmatch(r"/api/reviews/(\d+)/versions", path)
+            if m and method == "GET":
+                rid = int(m.group(1))
+                return self._send_json(200, db.list_versions(DB_PATH, rid))
+
+            m = re.fullmatch(r"/api/reviews/(\d+)/versions/(\d+)", path)
+            if m and method == "GET":
+                rid, rver = int(m.group(1)), int(m.group(2))
+                detail = db.get_version(DB_PATH, rid, rver)
+                if not detail["has_snapshot"]:
+                    raise ApiError(404, "该历史版本缺少完整输入快照，不可回看",
+                                   has_snapshot=False)
+                return self._send_json(200, detail)
+
+            m = re.fullmatch(r"/api/reviews/(\d+)/restore", path)
+            if m and method == "POST":
+                rid = int(m.group(1))
+                body = self._read_json()
+                if not isinstance(body.get("base_version"), int):
+                    raise ApiError(400, "缺少 base_version（用于并发版本校验）")
+                if not isinstance(body.get("review_version"), int):
+                    raise ApiError(400, "缺少 review_version（要恢复的历史版本号）")
+                db.restore_review(DB_PATH, rid, body["base_version"], body["review_version"])
+                return self._send_json(200, db.get_bundle(DB_PATH, rid))
+
             raise ApiError(404, "not found")
         except ApiError as e:
             self._send_json(e.status, e.payload)
-        except db.NotFound:
-            self._send_json(404, {"error": "复盘不存在"})
+        except db.NotFound as e:
+            self._send_json(404, {"error": str(e) or "复盘不存在"})
         except db.VersionConflict as e:
             self._send_json(409, {
                 "error": "该复盘已被其他成员保存了更新的版本，你的修改未保存，请刷新后重试",
                 "current_version": e.current_version,
             })
         except db.FinalizeRejected as e:
+            self._send_json(400, {"error": str(e)})
+        except db.RestoreRejected as e:
             self._send_json(400, {"error": str(e)})
 
     def do_GET(self):

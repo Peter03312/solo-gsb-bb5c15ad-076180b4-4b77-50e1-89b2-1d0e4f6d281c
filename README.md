@@ -12,6 +12,10 @@
   并展示从输入到结论的完整依据链。
 - **输入与结果分离保存**：原始输入存于 `events` / `relations` 表，每次保存的推算结果
   单独写入 `computations` 表（按复盘版本留存），互不覆盖。
+- **历史版本回看与恢复**：每次保存 / 定稿都会把当时的标题、事件与“先于”关系快照
+  追加写入 `versions` 表（不可变），与当次推算结果一一对应。网页与 HTTP API 可列出
+  历史版本、回看当时输入与推算依据，并可把指定版本恢复为新的草稿版本（重新推算，
+  旧版本全部保留）。旧库中缺少输入快照的历史版本会明确标记为不可回看、不可恢复。
 - **冲突处理**：约束冲突（窗口不可满足、关系成环、输入范围自相矛盾）时保留全部输入，
   指出冲突事件及双方依据链，该版本**不得定稿**。
 - **暂存事件**：缺少时间范围（或持续分钟数）的事件可暂存，其关联的“先于”关系
@@ -55,6 +59,7 @@ Compose 示例（`docker-compose.yml`）中已包含命名卷 `timeline-data` �
 python3 app/server.py          # 默认监听 8000，数据库写入 ./data/timeline.db
 PORT=9000 DB_PATH=/tmp/t.db python3 app/server.py
 python3 tests/test_compute.py  # 推算引擎单元测试
+python3 tests/test_versions.py # 版本快照 / 回看 / 恢复测试
 ```
 
 ## HTTP API 简介
@@ -66,16 +71,54 @@ python3 tests/test_compute.py  # 推算引擎单元测试
 | GET | `/api/reviews/{id}` | 复盘快照：元信息 + 原始输入 + 最近一次推算结果 |
 | PUT | `/api/reviews/{id}` | 整体保存并重新推算 `{base_version, title, events, relations}`；版本过期返回 409 |
 | POST | `/api/reviews/{id}/finalize` | 定稿 `{base_version}`；有冲突或暂存事件返回 400 |
+| GET | `/api/reviews/{id}/versions` | 历史版本列表（含是否可回看 / 可恢复标记） |
+| GET | `/api/reviews/{id}/versions/{v}` | 回看版本 v：当时输入快照 + 推算结果与依据；无快照的旧版本返回 404 |
+| POST | `/api/reviews/{id}/restore` | 恢复版本 `{base_version, review_version}` 为新的草稿版本并重新推算；版本过期返回 409 |
 | DELETE | `/api/reviews/{id}` | 删除复盘 |
+
+## 历史版本回看与恢复
+
+每次保存成功、每次定稿都会留存一条**不可变**的版本记录：当时的标题、事件与“先于”
+关系完整快照，以及对应的推算结果（含依据链）。定稿产生的版本沿用同一输入，仅状态
+记为 `finalized`。所有版本记录只追加、不修改、不覆盖。
+
+网页端：打开复盘后点击「历史版本」，可查看每个版本的标题、状态与推算结果；
+「查看」只读展示当时输入与推算依据链；「恢复」把该版本（含当时标题）复制为新的
+草稿版本并重新推算，旧版本全部保留。缺少输入快照的旧版本（来自升级前的老数据库）
+在列表中明确标记为**不可回看、不可恢复**，按钮禁用。
+
+恢复接口同样要求携带当前 `base_version`：若其他成员已保存更新的版本，返回 409，
+需刷新后重试。冲突或暂存输入的历史版本可以恢复，恢复后仍是草稿，能否定稿仍按
+最新推算结果判断（有冲突或暂存事件时定稿会被拒绝）。
+
+HTTP 调用示例：
+
+```bash
+# 列出复盘 1 的历史版本（has_snapshot=false 的为旧库遗留，不可回看/恢复）
+curl http://localhost:8000/api/reviews/1/versions
+
+# 回看 v2 当时的输入快照与推算依据
+curl http://localhost:8000/api/reviews/1/versions/2
+
+# 把 v2 恢复为新的草稿版本（base_version 必须等于当前版本号，否则 409）
+curl -X POST http://localhost:8000/api/reviews/1/restore \
+  -H 'Content-Type: application/json' \
+  -d '{"base_version": 4, "review_version": 2}'
+```
+
+恢复成功的响应与保存接口相同（复盘最新快照），版本号递增为新草稿版本；
+旧版本记录与推算结果均保留不动。
 
 ## 目录结构
 
 ```
 app/
   server.py          HTTP 服务（标准库 http.server）
-  db.py              SQLite 持久化、乐观锁、启动时建表
+  db.py              SQLite 持久化、乐观锁、版本快照、启动时建表与旧库迁移
   compute.py         时间窗推算与依据链生成
   static/            浏览器单页界面（原生 HTML/JS/CSS）
-tests/test_compute.py  推算引擎单元测试
+tests/
+  test_compute.py    推算引擎单元测试
+  test_versions.py   版本快照 / 回看 / 恢复测试
 Dockerfile / docker-compose.yml / .dockerignore
 ```

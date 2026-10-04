@@ -25,6 +25,7 @@
       <input id="review-title" type="text" placeholder="复盘标题">
       <span id="version-badge" class="badge"></span>
       <span id="status-badge" class="badge"></span>
+      <button id="btn-versions">历史版本</button>
       <button id="btn-finalize">定稿</button>
       <button id="btn-save" class="primary">保存并重新推算</button>
     </div>
@@ -63,6 +64,31 @@
 </main>
 
 <div id="empty" class="empty">请选择或新建一个复盘开始协作。</div>
+
+<div id="versions-panel" class="overlay hidden">
+  <div class="overlay-box">
+    <div class="overlay-head">
+      <h2>历史版本</h2>
+      <button id="btn-versions-close">✕ 关闭</button>
+    </div>
+    <p class="hint">每次保存与定稿都会留存不可变的输入快照与推算结果。恢复会把指定版本复制为新的草稿版本并重新推算，
+      旧版本全部保留；缺少输入快照的旧版本明确标记为不可回看、不可恢复。</p>
+    <div id="versions-list"></div>
+  </div>
+</div>
+
+<div id="snapshot-view" class="overlay hidden">
+  <div class="overlay-box">
+    <div class="overlay-head">
+      <h2 id="snapshot-title">回看版本</h2>
+      <div class="overlay-actions">
+        <button id="btn-snapshot-restore" class="primary">恢复此版本为新草稿</button>
+        <button id="btn-snapshot-close">✕ 关闭</button>
+      </div>
+    </div>
+    <div id="snapshot-body"></div>
+  </div>
+</div>
 
 <script src="/static/app.js"></script>
 </body>
